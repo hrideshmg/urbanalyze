@@ -14,7 +14,7 @@ const geistMono = localFont({
 });
 
 export const metadata = {
-  title: "Urbanalyze",
+  title: "Nivasa",
   description: "Find your dream location",
 };
 

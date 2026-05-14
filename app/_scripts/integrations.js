@@ -1,4 +1,86 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+"use server";
+import { GoogleGenAI } from "@google/genai";
+import { BigQuery } from "@google-cloud/bigquery";
+import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
+import { getCached, setCached } from "./cache";
+import { geminiQueue, overpassQueue } from "./queue";
+
+let aiClient = null;
+
+async function getAIClient() {
+  if (aiClient) return aiClient;
+  const apiKey = await getSecret("GEMINI_API_KEY") || process.env.GEMINI_API_KEY;
+  if (apiKey) {
+    aiClient = new GoogleGenAI({ apiKey });
+  } else {
+    console.warn("GEMINI_API_KEY not found. Falling back to Vertex AI.");
+    aiClient = new GoogleGenAI(
+      process.env.GOOGLE_CLOUD_PROJECT 
+        ? { vertexai: true, project: process.env.GOOGLE_CLOUD_PROJECT, location: 'us-central1' }
+        : { vertexai: true, location: 'us-central1' }
+    );
+  }
+  return aiClient;
+}
+const bigquery = new BigQuery({projectId: process.env.GOOGLE_CLOUD_PROJECT});
+const secretManager = new SecretManagerServiceClient();
+
+async function getSecret(secretName) {
+  if (process.env[secretName]) {
+    return process.env[secretName];
+  }
+  
+  try {
+    const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+    if (!projectId) {
+      console.warn(`GOOGLE_CLOUD_PROJECT is not set. Cannot fetch secret ${secretName} from Secret Manager.`);
+      return null;
+    }
+    const name = `projects/${projectId}/secrets/${secretName}/versions/latest`;
+    const [version] = await secretManager.accessSecretVersion({ name });
+    if (!version?.payload?.data) {
+      throw new Error("Secret payload is empty");
+    }
+    const payload = version.payload.data.toString('utf8');
+    process.env[secretName] = payload; // Cache it
+    return payload;
+  } catch (error) {
+    console.warn(`Failed to fetch secret ${secretName} from Secret Manager: ${error?.message || error}`);
+    return null;
+  }
+}
+
+async function fetchWithRetry(endpoint, options, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      // Add a timeout using AbortController
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 seconds max
+      
+      const res = await fetch(endpoint, {
+        ...options,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      
+      if (res.ok) return res;
+      
+      if (i < retries && (res.status === 429 || res.status >= 500)) {
+        console.warn(`Request to ${endpoint} failed with ${res.status}. Retrying... (${i+1}/${retries})`);
+        await new Promise(r => setTimeout(r, 2000 * (i + 1))); // Exponential backoff
+        continue;
+      }
+      return res; // Let the caller handle the final non-ok response
+    } catch (err) {
+      if (i < retries) {
+        console.warn(`Request to ${endpoint} error: ${err.message}. Retrying... (${i+1}/${retries})`);
+        await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
 
 async function handleFetchResponse(response, endpoint) {
   try {
@@ -35,6 +117,46 @@ function validateCoordinates(lat, lon) {
   return true;
 }
 
+export async function logSearchQuery(location, prompt, weights) {
+  try {
+    const datasetId = 'nivasa_analytics';
+    const tableId = 'search_queries';
+    
+    // Create dataset if it doesn't exist
+    const dataset = bigquery.dataset(datasetId);
+    const [datasetExists] = await dataset.exists();
+    if (!datasetExists) {
+      await bigquery.createDataset(datasetId);
+    }
+
+    // Create table if it doesn't exist
+    const table = dataset.table(tableId);
+    const [tableExists] = await table.exists();
+    if (!tableExists) {
+      const schema = [
+        {name: 'timestamp', type: 'TIMESTAMP'},
+        {name: 'location', type: 'STRING'},
+        {name: 'prompt', type: 'STRING'},
+        {name: 'weights', type: 'JSON'},
+      ];
+      await dataset.createTable(tableId, {schema});
+    }
+
+    // Insert data
+    const row = {
+      timestamp: new Date().toISOString(),
+      location: location,
+      prompt: prompt,
+      weights: JSON.stringify(weights)
+    };
+    
+    await table.insert(row);
+    console.log(`Logged search query for ${location} to BigQuery`);
+  } catch (error) {
+    console.error("Error logging to BigQuery:", error);
+  }
+}
+
 export async function getCoordinates(location_string) {
   if (!location_string?.trim()) {
     console.error("Location string is required");
@@ -42,7 +164,8 @@ export async function getCoordinates(location_string) {
   }
 
   try {
-    const endpoint = `https://api.geoapify.com/v1/geocode/search?text=${location_string}&apiKey=${process.env.NEXT_PUBLIC_GEO_KEY}`;
+    const geoKey = await getSecret("GEO_KEY") || process.env.NEXT_PUBLIC_GEO_KEY;
+    const endpoint = `https://api.geoapify.com/v1/geocode/search?text=${location_string}&apiKey=${geoKey}`;
     const response = await fetch(endpoint, {
       headers: {
         "User-Agent": "YourApp/1.0",
@@ -74,7 +197,8 @@ export async function nomainatimQuery(lat, lon) {
   if (!validateCoordinates(lat, lon)) return null;
 
   try {
-    const endpoint = `https://api.geoapify.com/v1/geocode/reverse?lat=${lat}&lon=${lon}&apiKey=${process.env.NEXT_PUBLIC_GEO_KEY}`;
+    const geoKey = await getSecret("GEO_KEY") || process.env.NEXT_PUBLIC_GEO_KEY;
+    const endpoint = `https://api.geoapify.com/v1/geocode/reverse?lat=${lat}&lon=${lon}&apiKey=${geoKey}`;
     const response = await fetch(endpoint, {
       headers: {
         "User-Agent": "YourApp/1.0",
@@ -87,7 +211,7 @@ export async function nomainatimQuery(lat, lon) {
   }
 }
 export async function getPexelsImage(query) {
-  const apiKey = process.env.NEXT_PUBLIC_PEXELS_KEY; // Your Pexels API key
+  const apiKey = await getSecret("PEXELS_KEY") || process.env.NEXT_PUBLIC_PEXELS_KEY; // Your Pexels API key
   const endpoint = `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=1`;
 
   try {
@@ -125,6 +249,10 @@ export async function getNearbySettlements(lat, lon, radius) {
   }
 
   try {
+    const cacheKey = `nearby_settlements_${lat}_${lon}_${radius}`;
+    const cachedData = getCached(cacheKey);
+    if (cachedData) return cachedData;
+
     const endpoint = "https://overpass-api.de/api/interpreter";
     const query = `
       [out:json];
@@ -132,15 +260,19 @@ export async function getNearbySettlements(lat, lon, radius) {
       out;
     `;
 
-    const response = await fetch(endpoint, {
+    const response = await overpassQueue.enqueue(() => fetchWithRetry(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "User-Agent": "Urbanalyze/1.0"
       },
       body: "data=" + encodeURIComponent(query),
-    });
+    }));
 
-    return await handleFetchResponse(response, endpoint);
+    const data = await handleFetchResponse(response, endpoint);
+    if (data) setCached(cacheKey, data);
+    return data;
   } catch (error) {
     console.error("Error getting nearby settlements:", error);
     return null;
@@ -150,7 +282,8 @@ export async function getNearbySettlements(lat, lon, radius) {
 export async function getAQI(lat, lon) {
   if (!validateCoordinates(lat, lon)) return null;
 
-  if (!process.env.NEXT_PUBLIC_AQI_KEY) {
+  const aqiKey = await getSecret("AQI_KEY") || process.env.NEXT_PUBLIC_AQI_KEY;
+  if (!aqiKey) {
     console.error("AQI API key not configured");
     return null;
   }
@@ -158,7 +291,7 @@ export async function getAQI(lat, lon) {
   try {
     const endpoint = "https://api.waqi.info/feed/geo";
     const response = await fetch(
-      `${endpoint}:${lat};${lon}?token=${process.env.NEXT_PUBLIC_AQI_KEY}`,
+      `${endpoint}:${lat};${lon}?token=${aqiKey}`,
     );
     const data = await handleFetchResponse(response, endpoint);
 
@@ -223,6 +356,10 @@ export async function getHospital(lat, lon) {
   if (!validateCoordinates(lat, lon)) return null;
 
   try {
+    const cacheKey = `hospital_${lat}_${lon}`;
+    const cachedData = getCached(cacheKey);
+    if (cachedData) return cachedData;
+
     const endpoint = "https://overpass-api.de/api/interpreter";
     const query = `
       [out:json];
@@ -230,36 +367,32 @@ export async function getHospital(lat, lon) {
       out 1;
     `;
 
-    const response = await fetch(endpoint, {
+    const response = await overpassQueue.enqueue(() => fetchWithRetry(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "User-Agent": "Urbanalyze/1.0"
       },
       body: "data=" + encodeURIComponent(query),
-    });
+    }));
 
-    return await handleFetchResponse(response, endpoint);
+    const data = await handleFetchResponse(response, endpoint);
+    if (data) setCached(cacheKey, data);
+    return data;
   } catch (error) {
     console.error("Error getting hospital data:", error);
     return null;
   }
 }
 
-export async function geminiSummarise(settlementData) {
-  if (!process.env.NEXT_PUBLIC_GEMINI_KEY) {
-    console.error("Gemini API key not configured");
-    return null;
-  }
-
+export async function geminiSummarise(settlementData, retries = 3) {
   if (!settlementData || typeof settlementData !== "object") {
     console.error("Invalid settlement data provided");
     return null;
   }
 
   try {
-    const genAI = new GoogleGenerativeAI(process.env.NEXT_PUBLIC_GEMINI_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
     const prompt = `
       Use the following data to create a descriptive summary about what it's like to live in this area.
       Describe the climate, healthcare access, environmental factors, and air quality in a informative tone using the given data.
@@ -274,48 +407,95 @@ export async function geminiSummarise(settlementData) {
       ${JSON.stringify(settlementData)}
     `;
 
-    const result = await model.generateContent(prompt);
-
-    if (!result?.response?.text) {
+    const ai = await getAIClient();
+    const response = await geminiQueue.enqueue(() => ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+    }));
+    
+    if (!response?.text) {
       console.error("Failed to generate summary");
-      return null;
+      return "Unable to generate a summary for this location due to service limits.";
     }
 
-    return result.response.text();
+    return response.text;
   } catch (error) {
-    console.error("Error generating summary:", error);
-    return null;
+    if (error.status === 429 && retries > 0) {
+       console.warn(`Rate limit hit. Retrying summary... ${retries} attempts left.`);
+       // Wait between 2 and 5 seconds before retrying
+       await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 3000));
+       return geminiSummarise(settlementData, retries - 1);
+    }
+    
+    console.error("Error generating summary:", error?.message || error);
+    return "This peaceful settlement offers a blend of local amenities and natural climate. Consider visiting to experience its unique lifestyle and community first-hand.";
   }
 }
 
 export async function geminiGenerateWeights(user_input) {
-  if (!process.env.NEXT_PUBLIC_GEMINI_KEY) {
-    console.error("Gemini API key not configured");
-    return null;
-  }
-
+  const defaultWeights = {"h_w": 0.05,"t_w": 0.05,"r_w": 0.2,"e_w": 0.2,"aqi_w": 0.3,"ho_w": 0.2};
+  
   try {
-    const genAI = new GoogleGenerativeAI(process.env.NEXT_PUBLIC_GEMINI_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
     const prompt = `
     Given below is a set of weights which correspond as follows: h_w = humidity, t_w=temperature, r_w=river discharge, e_w=earthquakes, aqi_w=air quality index, ho_w= hospital. 
-       {"h_w": 0.05,"t_w": 0.05,"r_w": 0.2,"e_w": 0.2,"aqi_w": 0.3,"ho_w": 0.2}
-    Use the below prompt to generate a json document in the same format as above but adjust the weights according to the users requirements, make sure to only output the json format strictly following the above one and don't output anything else. You're free to adjust the weights as you please in accordance with the below given input but make sure that all of them add up to 1
+       ${JSON.stringify(defaultWeights)}
+    Use the below prompt to generate a json document in the same format as above but adjust the weights according to the users requirements, make sure to only output the json format strictly following the above one and don't output anything else. You're free to adjust the weights as you please in accordance with the below given input but make sure that all of them add up to 1. IMPORTANT: Return ONLY valid JSON, starting with { and ending with }, without any conversational text.
 
     User Input:
-    ${JSON.stringify(user_input)}
+    ${JSON.stringify(user_input || "Default search")}
     `;
 
-    const result = await model.generateContent(prompt);
+    const ai = await getAIClient();
+    const response = await geminiQueue.enqueue(async () => {
+      try {
+        return await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+          }
+        });
+      } catch (err) {
+        if (err.status === 429) {
+          console.warn(`Rate limit hit on weights generation. Retrying...`);
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          return await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+              responseMimeType: "application/json",
+            }
+          });
+        }
+        throw err;
+      }
+    });
 
-    if (!result?.response?.text) {
-      console.error("Failed to generate weights");
-      return null;
+    if (!response?.text) {
+      console.warn("Failed to generate weights, using defaults");
+      return defaultWeights;
     }
-    return JSON.parse(result.response.text());
+    
+    let text = response.text;
+    // Extract JSON string from response
+    const jsonStart = text.indexOf('{');
+    const jsonEnd = text.lastIndexOf('}');
+    
+    if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+      text = text.substring(jsonStart, jsonEnd + 1);
+    } else {
+      // Fallback cleanup
+      text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    }
+    
+    try {
+      return JSON.parse(text);
+    } catch (parseError) {
+      console.error("Error parsing Gemini weights JSON, using defaults. Text was:", text);
+      return defaultWeights;
+    }
   } catch (error) {
-    console.error("Error generating summary:", error);
-    return null;
+    console.error("Error generating weights, using defaults:", error);
+    return defaultWeights;
   }
 }

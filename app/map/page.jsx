@@ -50,7 +50,7 @@ export default function MapsTest() {
     <div className="flex-1 flex">
       <div className="bg-light flex-1 h-screen flex flex-col px-[1vw] max-h-screen overflow-y-scroll">
         <div className="text-black bg-light text-[3vw] py-[1vw] font-semibold sticky top-0">
-          <Link className="tracking-tighter" href="/">URBANALYZE</Link>
+          <Link className="tracking-tighter" href="/">NIVASA</Link>
           <FilterTags />
         </div>
         <div className="flex-1">

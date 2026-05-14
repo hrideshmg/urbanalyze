@@ -50,7 +50,7 @@ export default function Home() {
           <div className="flex-1 flex flex-col justify-center items-center">
             <div className="flex flex-col justify-center items-start">
               <p className="text-[4.5vw]">
-                {isLoading ? <>Urbanalyzing...</> : <>Urbanalyze</>}
+                {isLoading ? <>Analyzing...</> : <>Nivasa</>}
               </p>
               <p className="text-start px-[0.5vw] text-[1.5vw] bg-black text-white  shadow-[0_2px_20px_rgba(0,_0,_0,_0.3)]">
                 Find your dream location

@@ -1,11 +1,12 @@
 Winning project for the SDG Track at the evoLUMIN national level hackathon. It was made by me, [@amansxcalibur](https://github.com/amansxcalibur), [@itsabhinavm](https://github.com/ItsAbhinavM) and [@angrezichatterbox](https://github.com/angrezichatterbox) under our team name - Sadya Scripters.
 
-Devfolio Link: [Urbanalyze](https://devfolio.co/projects/ecoaware-d0cd)
+Devfolio Link: [Nivasa](https://devfolio.co/projects/ecoaware-d0cd)
 
----
-# URBANALYZE
+## Introduction
 
-**URBANALYZE** is a web application designed to help users determine the suitability of specific areas for housing or development by analyzing various critical factors, including weather, earthquake activity, air quality index, proximity to amenities etc.
+# NIVASA
+
+**NIVASA** is a web application designed to help users determine the suitability of specific areas for housing or development by analyzing various critical factors, including weather, earthquake activity, air quality index, proximity to amenities etc.
 
 ## Features
 
@@ -27,16 +28,9 @@ Devfolio Link: [Urbanalyze](https://devfolio.co/projects/ecoaware-d0cd)
 
 ## Getting Started
 
-Follow these steps to set up URBANALYZE on your local machine:
+Follow these steps to set up NIVASA on your local machine:
 
-### Prerequisites
-
-- **Node.js** and **npm**
-- API keys for **OpenStreetMap** and **Gemini**
-
-### Installation
-
-1. Clone the repository:
+1. **Clone the Repository**
 
    ```bash
    git clone https://github.com/hrideshmg/urbanalyze.git

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useCoords } from "@/app/_context/CoordsContext";
-import { geminiGenerateWeights, getCoordinates } from "@/app/_scripts/integrations";
+import { geminiGenerateWeights, getCoordinates, logSearchQuery } from "@/app/_scripts/integrations";
 import { getPexelsImage } from "@/app/_scripts/integrations";
 import {
   geminiSummarise,
@@ -48,11 +48,17 @@ export default function SearchForm({ isLoading, setIsLoading }) {
 
   useEffect(() => {
     async function fetchResult() {
-      let result = await triggerGeoFusion(coords, 10000);
-      setSettlementData(result);
+      if (!coords || !weights) return;
+      try {
+        let result = await triggerGeoFusion(coords, 10000);
+        setSettlementData(result);
+      } catch (error) {
+        console.error("Error in geo fusion:", error);
+        setIsLoading(false);
+      }
     }
-    if (weights) fetchResult()
-  }, [weights])
+    if (weights && coords) fetchResult()
+  }, [weights, coords])
 
   const handleBlur = async (e) => {
     if (e.target.value) {
@@ -74,7 +80,29 @@ export default function SearchForm({ isLoading, setIsLoading }) {
     setIsLoading(true);
 
     const form_data = new FormData(e.target);
-    const weights = await geminiGenerateWeights(form_data.get("prompt"));
+    const prompt = form_data.get("prompt");
+    const location = form_data.get("location");
+    
+    // Ensure we have coordinates
+    let currentCoords = coords;
+    if (!currentCoords && location) {
+      currentCoords = await getCoordinates(location);
+      setCoords(currentCoords);
+    }
+
+    if (!currentCoords) {
+      console.error("Could not determine coordinates for location:", location);
+      setIsLoading(false);
+      return;
+    }
+
+    const weights = await geminiGenerateWeights(prompt);
+    
+    // Log to BigQuery
+    if (weights) {
+      await logSearchQuery(state.location, prompt, weights);
+    }
+    
     setWeights(weights);
   };
 
@@ -107,6 +135,14 @@ export default function SearchForm({ isLoading, setIsLoading }) {
     }));
 
     const nearby_settlements = await getNearbySettlements(lat, lon, radius);
+    
+    if (!nearby_settlements || !Array.isArray(nearby_settlements.elements) || nearby_settlements.elements.length === 0) {
+      console.warn("No nearby settlements found or failed to fetch.");
+      setProgress({ messages: [], target_len: 0 });
+      setIsLoading(false);
+      return [];
+    }
+
     setProgress((prevProgress) => ({
       ...prevProgress,
       target_len: nearby_settlements["elements"].length * 8 + 2,
@@ -124,7 +160,8 @@ export default function SearchForm({ isLoading, setIsLoading }) {
           images: {},
         };
 
-        const aqi = (await getAQI(s_lat, s_lon)).data.aqi || 100;
+        const aqiResponse = await getAQI(s_lat, s_lon);
+        const aqi = (aqiResponse && aqiResponse.data) ? aqiResponse.data.aqi || 100 : 100;
         setProgress((prevProgress) => ({
           ...prevProgress,
           messages: [
@@ -147,8 +184,10 @@ export default function SearchForm({ isLoading, setIsLoading }) {
         const avg_humidity = weather.current.relative_humidity_2m;
         const avg_temperature = weather.current.temperature_2m;
 
-        const nominatim = (await nomainatimQuery(s_lat, s_lon)).features[0]
-          .properties || { formatted: "API Fetch Failed" };
+        const nominatimData = await nomainatimQuery(s_lat, s_lon);
+        const nominatim = (nominatimData && nominatimData.features && nominatimData.features[0])
+          ? nominatimData.features[0].properties 
+          : { formatted: "API Fetch Failed" };
         setProgress((prevProgress) => ({
           ...prevProgress,
           messages: [
@@ -175,8 +214,8 @@ export default function SearchForm({ isLoading, setIsLoading }) {
           river_discharge.reduce((a, b) => a + b, 0) /
           (river_discharge.length || 1);
 
-        const earthquakes =
-          (await getEarthquake(s_lat, s_lon)).features.length || 0;
+        const earthquakeData = await getEarthquake(s_lat, s_lon);
+        const earthquakes = (earthquakeData && earthquakeData.features) ? earthquakeData.features.length : 0;
         setProgress((prevProgress) => ({
           ...prevProgress,
           messages: [
@@ -185,11 +224,10 @@ export default function SearchForm({ isLoading, setIsLoading }) {
           ],
         }));
 
-        const closest_hospital = (
-          (await getHospital(s_lat, s_lon)) || {
-            elements: [{ lat: s_lat, lon: s_lon, tags: { name: "Unknown" } }],
-          }
-        ).elements[0];
+        const hospitalData = await getHospital(s_lat, s_lon);
+        const closest_hospital = (hospitalData && hospitalData.elements && hospitalData.elements.length > 0)
+          ? hospitalData.elements[0]
+          : { lat: s_lat, lon: s_lon, tags: { name: "Unknown" } };
         setProgress((prevProgress) => ({
           ...prevProgress,
           messages: [
@@ -241,10 +279,10 @@ export default function SearchForm({ isLoading, setIsLoading }) {
         const imageQuery = settlement_data.address.city;
         const settlement_img = await getPexelsImage(imageQuery);
 
-        settlement_data.images.landscape =
-          settlement_img?.photos[0].src.landscape || "/placeholder.jpg";
-        settlement_data.images.small = settlement_img?.photos[0].src.small || "/placeholder.jpg";
-        settlement_data.images.tiny = settlement_img?.photos[0].src.tiny || "/placeholder.jpg";
+        const photo = settlement_img?.photos?.[0]?.src;
+        settlement_data.images.landscape = photo?.landscape || "/placeholder.jpg";
+        settlement_data.images.small = photo?.small || "/placeholder.jpg";
+        settlement_data.images.tiny = photo?.tiny || "/placeholder.jpg";
         setProgress((prevProgress) => ({
           ...prevProgress,
           messages: [
@@ -252,6 +290,11 @@ export default function SearchForm({ isLoading, setIsLoading }) {
             `Fetched Images For Settlement ${index}`,
           ],
         }));
+
+        // Add a slight delay based on the index to stagger the API calls and prevent rate limits
+        if (index > 0) {
+          await delay(index * 2000); 
+        }
 
         settlement_data.gemini_summary =
           (await geminiSummarise(settlement_data)) || "Placeholder Summary";
