@@ -8,6 +8,19 @@ import X from "../svg/x";
 import Link from "next/link";
 import Stats from "./stats";
 
+const LANGUAGE_NAMES = {
+  hi: "हिंदी (Hindi)",
+  bn: "বাংলা (Bengali)",
+  te: "తెలుగు (Telugu)",
+  mr: "मराठी (Marathi)",
+  ta: "தமிழ் (Tamil)",
+  ur: "اردو (Urdu)",
+  gu: "ગુજરાતી (Gujarati)",
+  kn: "ಕನ್ನಡ (Kannada)",
+  ml: "മലയാളം (Malayalam)",
+  pa: "ਪੰਜਾਬੀ (Punjabi)"
+};
+
 export default function ProductBrief({ open, setOpen, currBrief }) {
   const [expand, setExpand] = useState({
     w: "min-w-[25vw]",
@@ -99,12 +112,21 @@ export default function ProductBrief({ open, setOpen, currBrief }) {
           </div>
         </div>
       </div>
-      <div
-        className={`bg-[#5B3A29] text-white max-h-[40vh] overflow-y-auto min-w-[28vw] text-wrap max-w-[25vw] m-[0.5vw] p-[1.5vw] rounded-[3vw] text-[1vw]
+            <div
+                className={`bg-[#5B3A29] text-white max-h-[40vh] overflow-y-auto min-w-[28vw] text-wrap max-w-[25vw] m-[0.5vw] p-[1.5vw] rounded-[3vw] text-[1vw]
                     ${expand.h == "min-h-[98vh]" ? "hidden" : ""} shadow-[0_0px_20px_rgba(90,_90,_90,_0.3)]`}
-      >
-        {currBrief.gemini_summary}
-      </div>
+            >
+                <div className="mb-4">
+                  <span className="font-bold block mb-1">English:</span>
+                  {currBrief.gemini_summary}
+                </div>
+                {currBrief.gemini_summary_translated && currBrief.gemini_summary_translated !== currBrief.gemini_summary && (
+                  <div className="border-t border-white/20 pt-4 mt-2">
+                    <span className="font-bold block mb-1">{LANGUAGE_NAMES[currBrief.target_language] || "Translation"}:</span>
+                    {currBrief.gemini_summary_translated}
+                  </div>
+                )}
+            </div>
     </div>
   );
 }

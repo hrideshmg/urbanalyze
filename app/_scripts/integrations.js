@@ -119,39 +119,23 @@ function validateCoordinates(lat, lon) {
 
 export async function logSearchQuery(location, prompt, weights) {
   try {
-    const datasetId = 'nivasa_analytics';
-    const tableId = 'search_queries';
-    
-    // Create dataset if it doesn't exist
-    const dataset = bigquery.dataset(datasetId);
-    const [datasetExists] = await dataset.exists();
-    if (!datasetExists) {
-      await bigquery.createDataset(datasetId);
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:5002";
+    const response = await fetch(`${backendUrl}/log_query`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        location,
+        prompt,
+        weights
+      })
+    });
+    if (response.ok) {
+      console.log(`Logged search query for ${location} to Backend BigQuery`);
+    } else {
+      console.error("Backend error logging to BigQuery");
     }
-
-    // Create table if it doesn't exist
-    const table = dataset.table(tableId);
-    const [tableExists] = await table.exists();
-    if (!tableExists) {
-      const schema = [
-        {name: 'timestamp', type: 'TIMESTAMP'},
-        {name: 'location', type: 'STRING'},
-        {name: 'prompt', type: 'STRING'},
-        {name: 'weights', type: 'JSON'},
-      ];
-      await dataset.createTable(tableId, {schema});
-    }
-
-    // Insert data
-    const row = {
-      timestamp: new Date().toISOString(),
-      location: location,
-      prompt: prompt,
-      weights: JSON.stringify(weights)
-    };
-    
-    await table.insert(row);
-    console.log(`Logged search query for ${location} to BigQuery`);
   } catch (error) {
     console.error("Error logging to BigQuery:", error);
   }
@@ -393,40 +377,24 @@ export async function geminiSummarise(settlementData, retries = 3) {
   }
 
   try {
-    const prompt = `
-      Use the following data to create a descriptive summary about what it's like to live in this area.
-      Describe the climate, healthcare access, environmental factors, and air quality in a informative tone using the given data.
-      Avoid using bullet points, instead crafting a smooth narrative that flows naturally from one topic to the next.
-      Guidelines for Summary:
-      Describe healthcare accessibility
-      Discuss environmental factors like the earthquake risk and the risk of flood based on river discharge
-      Talk about air quality in relatable terms, mentioning any potential impact on health or lifestyle.
-      Conclude with an inviting thought, encouraging readers to picture themselves in this area, mentioning any unique lifestyle benefits.
-      Use a single paragraph without any blank lines
-      USE MAXIMUM 50 words
-      ${JSON.stringify(settlementData)}
-    `;
-
-    const ai = await getAIClient();
-    const response = await geminiQueue.enqueue(() => ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-    }));
-    
-    if (!response?.text) {
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:5002";
+    const response = await fetch(`${backendUrl}/summarize`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        settlementData
+      })
+    });
+    const data = await response.json();
+    if (!data || !data.success) {
       console.error("Failed to generate summary");
       return "Unable to generate a summary for this location due to service limits.";
     }
 
-    return response.text;
+    return data.summary;
   } catch (error) {
-    if (error.status === 429 && retries > 0) {
-       console.warn(`Rate limit hit. Retrying summary... ${retries} attempts left.`);
-       // Wait between 2 and 5 seconds before retrying
-       await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 3000));
-       return geminiSummarise(settlementData, retries - 1);
-    }
-    
     console.error("Error generating summary:", error?.message || error);
     return "This peaceful settlement offers a blend of local amenities and natural climate. Consider visiting to experience its unique lifestyle and community first-hand.";
   }
@@ -436,66 +404,44 @@ export async function geminiGenerateWeights(user_input) {
   const defaultWeights = {"h_w": 0.05,"t_w": 0.05,"r_w": 0.2,"e_w": 0.2,"aqi_w": 0.3,"ho_w": 0.2};
   
   try {
-    const prompt = `
-    Given below is a set of weights which correspond as follows: h_w = humidity, t_w=temperature, r_w=river discharge, e_w=earthquakes, aqi_w=air quality index, ho_w= hospital. 
-       ${JSON.stringify(defaultWeights)}
-    Use the below prompt to generate a json document in the same format as above but adjust the weights according to the users requirements, make sure to only output the json format strictly following the above one and don't output anything else. You're free to adjust the weights as you please in accordance with the below given input but make sure that all of them add up to 1. IMPORTANT: Return ONLY valid JSON, starting with { and ending with }, without any conversational text.
-
-    User Input:
-    ${JSON.stringify(user_input || "Default search")}
-    `;
-
-    const ai = await getAIClient();
-    const response = await geminiQueue.enqueue(async () => {
-      try {
-        return await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: prompt,
-          config: {
-            responseMimeType: "application/json",
-          }
-        });
-      } catch (err) {
-        if (err.status === 429) {
-          console.warn(`Rate limit hit on weights generation. Retrying...`);
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          return await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-            config: {
-              responseMimeType: "application/json",
-            }
-          });
-        }
-        throw err;
-      }
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:5002";
+    const response = await fetch(`${backendUrl}/generate_weights`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        user_input: user_input || "Default search"
+      })
     });
-
-    if (!response?.text) {
+    const data = await response.json();
+    if (!data || !data.success) {
       console.warn("Failed to generate weights, using defaults");
       return defaultWeights;
     }
-    
-    let text = response.text;
-    // Extract JSON string from response
-    const jsonStart = text.indexOf('{');
-    const jsonEnd = text.lastIndexOf('}');
-    
-    if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-      text = text.substring(jsonStart, jsonEnd + 1);
-    } else {
-      // Fallback cleanup
-      text = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    }
-    
-    try {
-      return JSON.parse(text);
-    } catch (parseError) {
-      console.error("Error parsing Gemini weights JSON, using defaults. Text was:", text);
-      return defaultWeights;
-    }
+    return data.weights;
   } catch (error) {
     console.error("Error generating weights, using defaults:", error);
     return defaultWeights;
+  }
+}
+
+export async function translateSummary(text, targetLanguage = 'hi') {
+  try {
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:5002";
+    const response = await fetch(`${backendUrl}/translate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, target_language: targetLanguage })
+    });
+    
+    const data = await response.json();
+    if (data.success) {
+      return data.translated_text;
+    }
+    return text; // fallback to original English
+  } catch (error) {
+    console.error("Translation failed:", error);
+    return text;
   }
 }

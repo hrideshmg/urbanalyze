@@ -12,6 +12,7 @@ import {
   getRiverDischarge,
   getWeather,
   nomainatimQuery,
+  translateSummary
 } from "@/app/_scripts/integrations";
 import { ACCESS_TOKEN_NAME } from "@/app/_constants/constants";
 import Loader from "./loader";
@@ -43,6 +44,7 @@ export default function SearchForm({ isLoading, setIsLoading }) {
   const [state, setState] = useState({
     location: "",
     desc: "",
+    language: "hi"
   });
 
 
@@ -50,7 +52,7 @@ export default function SearchForm({ isLoading, setIsLoading }) {
     async function fetchResult() {
       if (!coords || !weights) return;
       try {
-        let result = await triggerGeoFusion(coords, 10000);
+        let result = await triggerGeoFusion(coords, 10000, state.language);
         setSettlementData(result);
       } catch (error) {
         console.error("Error in geo fusion:", error);
@@ -122,7 +124,7 @@ export default function SearchForm({ isLoading, setIsLoading }) {
     router.push("/map");
   };
 
-  async function triggerGeoFusion(coords, radius) {
+  async function triggerGeoFusion(coords, radius, targetLanguage) {
     const [lat, lon] = coords;
     let result = [];
     const { h_w, t_w, r_w, e_w, aqi_w, ho_w } = weights;
@@ -298,6 +300,13 @@ export default function SearchForm({ isLoading, setIsLoading }) {
 
         settlement_data.gemini_summary =
           (await geminiSummarise(settlement_data)) || "Placeholder Summary";
+        
+        // Translate the summary into selected language
+        if (targetLanguage && targetLanguage !== 'en') {
+          settlement_data.gemini_summary_translated = await translateSummary(settlement_data.gemini_summary, targetLanguage);
+          settlement_data.target_language = targetLanguage;
+        }
+        
         // Update progress for generating summary
         setProgress((prevProgress) => ({
           ...prevProgress,
@@ -331,55 +340,81 @@ export default function SearchForm({ isLoading, setIsLoading }) {
       ) : (
         <form
           onSubmit={handleSubmit}
-          className="min-h-[80vh] min-w-[40vw] bg-light flex justify-center items-center flex-col rounded-[2vw] shadow-[0_10px_20px_rgba(0,0,0,_0.2)]"
+          className="min-h-[80vh] min-w-[40vw] bg-white/90 backdrop-blur-xl border border-white/20 flex justify-center items-center flex-col rounded-3xl shadow-[0_20px_40px_rgba(0,0,0,0.12)] p-12 transition-all"
         >
-          <p className="text-[4.5vw] tracking-tighter w-[30vw] text-start font-semibold">
-            ENTER
-          </p>
-          <br />
-          <p className="font-semibold text-[4.5vw] tracking-tighter -mt-[2.7vw] w-[30vw] text-start">
-            DETAILS
-          </p>
-          <div className="flex flex-col w-[30vw]">
-            <div className="flex">
-              <p className="text-[2vw] mr-[0.1vw]">Location:</p>
-              <input
-                id="location"
-                placeholder="Kollam"
-                value={state.location}
-                onChange={handleChange}
-                onBlur={handleBlur}
-                required
-                type="text"
-                className="bg-transparent w-full pl-[0.2vw] pr-[0.5vw] text-[1.6vw] border border-transparent focus:border-gray-300 focus:outline-none focus:border-2"
-              />
-            </div>
-            <div className="h-[2px] bg-black w-full mb-[0.5vw]"></div>
-            <div className="flex-row">
-              <p className="text-[2vw] mr-[1vw]">What are you looking for :</p>
-              <textarea
-                id="desc"
-                name="prompt"
-                placeholder="Hospitals, good AQI etc"
-                value={state.desc}
-                onChange={handleChange}
-                className="bg-transparent w-full px-[0.5vw] rounded-xl focus:border-b-0 text-[1.6vw] h-[15vh] word-wrap break-all max-w-[100%] border border-transparent focus:border-gray-300 focus:outline-none focus:border-2 leading-tight"
-              />
+          <div className="w-full max-w-lg mx-auto flex flex-col">
+            <h2 className="text-5xl font-black tracking-tighter text-gray-900 mb-8 leading-none">
+              ENTER<br />DETAILS
+            </h2>
+            
+            <div className="flex flex-col space-y-8">
+              <div className="relative group">
+                <label htmlFor="location" className="block text-sm font-bold text-gray-500 uppercase tracking-wider mb-2">
+                  Location
+                </label>
+                <input
+                  id="location"
+                  placeholder="e.g. Kochi, Mumbai"
+                  value={state.location}
+                  onChange={handleChange}
+                  onBlur={handleBlur}
+                  required
+                  type="text"
+                  className="w-full bg-transparent text-3xl font-semibold text-gray-900 border-b-2 border-gray-200 focus:border-black focus:outline-none transition-colors pb-2 placeholder-gray-300"
+                />
+              </div>
+
+              <div className="relative group">
+                <label htmlFor="desc" className="block text-sm font-bold text-gray-500 uppercase tracking-wider mb-2">
+                  What are you looking for?
+                </label>
+                <textarea
+                  id="desc"
+                  name="prompt"
+                  placeholder="Hospitals, good AQI, safe areas..."
+                  value={state.desc}
+                  onChange={handleChange}
+                  className="w-full bg-gray-50/50 rounded-2xl p-4 text-xl font-medium text-gray-900 border-2 border-transparent focus:border-black focus:outline-none focus:bg-white transition-all h-32 resize-none placeholder-gray-400"
+                />
+              </div>
+
+              <div className="relative group">
+                <label htmlFor="language" className="block text-sm font-bold text-gray-500 uppercase tracking-wider mb-2">
+                  Translate Insights To
+                </label>
+                <select
+                  id="language"
+                  value={state.language}
+                  onChange={handleChange}
+                  className="w-full bg-gray-50/50 rounded-2xl p-4 text-xl font-medium text-gray-900 border-2 border-transparent focus:border-black focus:outline-none focus:bg-white transition-all appearance-none cursor-pointer"
+                >
+                  <option value="en">English (No Translation)</option>
+                  <option value="hi">हिंदी (Hindi)</option>
+                  <option value="bn">বাংলা (Bengali)</option>
+                  <option value="te">తెలుగు (Telugu)</option>
+                  <option value="mr">मराठी (Marathi)</option>
+                  <option value="ta">தமிழ் (Tamil)</option>
+                  <option value="ur">اردو (Urdu)</option>
+                  <option value="gu">ગુજરાતી (Gujarati)</option>
+                  <option value="kn">ಕನ್ನಡ (Kannada)</option>
+                  <option value="ml">മലയാളം (Malayalam)</option>
+                  <option value="pa">ਪੰਜਾਬੀ (Punjabi)</option>
+                </select>
+                <div className="absolute right-4 top-12 pointer-events-none">
+                  <svg className="w-6 h-6 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                </div>
+              </div>
             </div>
 
-            <div className="h-[2px] bg-black w-full mb-[0.5vw]"></div>
-          </div>
-          <div className="flex flex-col w-[30vw]"></div>
-          <div className="flex w-[30vw]">
-            <div className="flex flex-col flex-1">
-              <div className="flex"></div>
-              <button
-                type="submit"
-                className="flex-1 bg-black rounded-[2vw] flex justify-center items-center mt-[1vw] w-full min-h-[4vw]"
-              >
-                <p className="text-white">SEARCH</p>
-              </button>
-            </div>
+            <button
+              type="submit"
+              className="mt-10 bg-black text-white rounded-full py-4 px-8 text-lg font-bold tracking-wide hover:scale-[1.02] hover:shadow-xl hover:bg-gray-900 transition-all active:scale-95 flex items-center justify-center space-x-2"
+            >
+              <span>EXPLORE AREA</span>
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clipRule="evenodd" />
+              </svg>
+            </button>
           </div>
         </form>
       )}
